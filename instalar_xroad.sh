@@ -540,7 +540,7 @@ if [ "$DB_MODE" == "externa" ]; then
   echo ""
   echo "--- Verificando conexión a la base de datos externa ---"
   DB_TEST_LOG=$(mktemp)
-  if ! PGPASSWORD="$DB_SUPERUSER_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_SUPERUSER" -c '\q' >"$DB_TEST_LOG" 2>&1; then
+  if ! PGPASSWORD="$DB_SUPERUSER_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_SUPERUSER" -d postgres -c '\q' >"$DB_TEST_LOG" 2>&1; then
     cat "$DB_TEST_LOG"
     rm -f "$DB_TEST_LOG"
     MI_IP=$(hostname -I | tr ' ' '\n' | grep -v '^127\.' | grep -v '^10\.0\.2\.' | head -1)
@@ -616,7 +616,7 @@ if [ "$DB_MODE" == "externa" ]; then
   echo "--- Verificando que las bases de datos se hayan creado ---"
   DB_FALTANTES=""
   for DB in "serverconf_${DB_PREFIX}" "messagelog_${DB_PREFIX}" "opmonitor_${DB_PREFIX}"; do
-    if ! PGPASSWORD="$DB_SUPERUSER_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_SUPERUSER" -lqt 2>/dev/null | cut -d '|' -f 1 | grep -qw "$DB"; then
+    if ! PGPASSWORD="$DB_SUPERUSER_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_SUPERUSER" -d postgres -lqt 2>/dev/null | cut -d '|' -f 1 | grep -qw "$DB"; then
       DB_FALTANTES="$DB_FALTANTES $DB"
     fi
   done
