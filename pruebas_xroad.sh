@@ -2,11 +2,6 @@
 # =============================================================================
 # Pruebas post-instalación de X-Road Security Server
 # Plataforma X-BA — GCBA / Agencia de Sistemas de Información
-#
-# Corre sobre cualquier Security Server ya instalado, sin importar cómo se
-# instaló. No instala ni modifica nada: diagnostica conectividad, TLS,
-# servicios y logs, y genera un reporte .txt con lo que pasó (OK) y lo que
-# no (AVISO/ERROR). Los datos del servidor se leen de la propia instalación.
 # =============================================================================
 
 RED='\033[0;31m'
@@ -19,11 +14,6 @@ ok()   { echo -e "${GREEN}[OK]${NC} $1"; }
 warn() { echo -e "${YELLOW}[AVISO]${NC} $1"; }
 err()  { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# =============================================================================
-# REGISTRO DE RESULTADOS — cada chequeo se imprime en pantalla Y se guarda
-# para el reporte final. Nada acá interrumpe el script: es un diagnóstico,
-# no una instalación, así que se corren todas las pruebas pase lo que pase.
-# =============================================================================
 RESULTS=()
 TOTAL_OK=0
 TOTAL_AVISO=0
@@ -50,7 +40,7 @@ probar_tcp() {
   if timeout 5 bash -c "exec 3<>/dev/tcp/${HOST}/${PUERTO}" 2>/dev/null; then
     registrar OK "$CAT" "Conectividad a $HOST:$PUERTO OK"
   else
-    registrar ERROR "$CAT" "Sin conectividad a $HOST:$PUERTO" "Solicitar apertura de este puerto a la mesa de ayuda / equipo de seguridad"
+    registrar ERROR "$CAT" "Sin conectividad a $HOST:$PUERTO"
   fi
 }
 
@@ -64,7 +54,7 @@ probar_dns() {
   if [ -n "$IP" ]; then
     registrar OK "$CAT" "DNS de $HOST resuelve a $IP"
   else
-    registrar ERROR "$CAT" "No se pudo resolver $HOST" "Verificar DNS configurado en el servidor (probar: nslookup $HOST)"
+    registrar ERROR "$CAT" "No se pudo resolver $HOST"
   fi
 }
 
@@ -73,9 +63,6 @@ probar_tls() {
   local OUT
   OUT=$(echo | timeout 10 openssl s_client -connect "${HOST}:${PUERTO}" -showcerts 2>&1)
 
-  # El puerto puede responder y hacer handshake OK pero devolver un
-  # certificado wildcard (*.gcba.gob.ar) en vez del certificado de X-Road,
-  # así que se chequea el subject antes del "Verify return code".
   local SUBJECT
   SUBJECT=$(echo "$OUT" | grep -m1 "^subject=")
   if echo "$SUBJECT" | grep -qiE "AGENCIA DE SISTEMAS DE INFORMACION|\*\.gcba\.gob\.ar"; then
@@ -90,7 +77,7 @@ probar_tls() {
   else
     local MOTIVO
     MOTIVO=$(echo "$OUT" | grep "Verify return code" | tail -1)
-    registrar AVISO "$CAT" "TLS de $HOST:$PUERTO respondió pero el certificado no validó" "${MOTIVO:-sin 'Verify return code' en la respuesta, revisar manualmente: openssl s_client -connect $HOST:$PUERTO -showcerts}"
+    registrar AVISO "$CAT" "TLS de $HOST:$PUERTO: el certificado no validó" "$MOTIVO"
   fi
 }
 
@@ -101,7 +88,7 @@ probar_http() {
   if echo "$CODE" | grep -qE "$ESPERADOS"; then
     registrar OK "$CAT" "$URL respondió HTTP $CODE"
   else
-    registrar ERROR "$CAT" "$URL respondió HTTP ${CODE:-sin respuesta}" "Revisar conectividad/firewall hacia ese host y puerto"
+    registrar ERROR "$CAT" "$URL respondió HTTP ${CODE:-sin respuesta}"
   fi
 }
 
@@ -112,19 +99,15 @@ echo "  Plataforma X-BA — GCBA                     "
 echo "=============================================="
 
 if [ "$EUID" -ne 0 ]; then
-  warn "No se está ejecutando como root. Algunas pruebas (logs, detalle de puertos) van a ser limitadas."
-  warn "Para un diagnóstico completo: sudo bash pruebas_xroad.sh"
+  warn "Se recomienda ejecutar como root: sudo bash pruebas_xroad.sh"
 fi
 
 # =============================================================================
-# 0. SISTEMA OPERATIVO — el Security Server puede estar sobre RHEL 8 o
-#    Ubuntu según el organismo. Se detecta acá para usar el gestor de
-#    paquetes y de firewall que corresponda en el resto del script.
+# 0. SISTEMA OPERATIVO
 # =============================================================================
 SO_ID="desconocido"
 SO_PRETTY="desconocido"
 if [ -f /etc/os-release ]; then
-  # shellcheck disable=SC1091
   . /etc/os-release
   SO_ID="${ID:-desconocido}"
   SO_PRETTY="${PRETTY_NAME:-$SO_ID}"
@@ -140,11 +123,7 @@ fi
 registrar OK "Sistema operativo" "SO detectado: $SO_PRETTY ($GESTOR_PAQUETES)"
 
 # =============================================================================
-# 1. DATOS DEL SERVIDOR — se leen de la propia instalación de X-Road (no
-#    dependen de cómo se instaló): el Central Server sale del anchor, el MSS
-#    del conf global y la base de datos de db.properties. Solo si el Central
-#    Server no se puede detectar (ej: todavía no se cargó el anchor) se
-#    pregunta el ambiente.
+# 1. DATOS DEL SERVIDOR
 # =============================================================================
 echo ""
 echo "--- Datos del servidor ---"
@@ -166,7 +145,7 @@ if [ -z "$MSS_SERVER" ] && [[ "$CENTRAL_SERVER" == *central* ]]; then
 fi
 
 if [ -z "$CENTRAL_SERVER" ]; then
-  warn "No se pudo detectar el Central Server (¿todavía no se cargó el anchor?). Indique el ambiente."
+  warn "No se detectó el Central Server (anchor sin cargar). Seleccione el ambiente:"
   echo ""
   echo "  [1] QA"
   echo "  [2] HML - Homologación"
@@ -260,8 +239,6 @@ fi
 echo ""
 echo "--- Servicios de X-Road ---"
 
-# Los obligatorios existen en todas las versiones; los opcionales dependen de
-# la versión y de los addons instalados, así que si no existen se omiten.
 SERVICIOS_OBLIGATORIOS=(xroad-signer xroad-confclient xroad-proxy xroad-proxy-ui-api)
 SERVICIOS_OPCIONALES=(xroad-base xroad-monitor xroad-opmonitor xroad-addon-messagelog)
 
@@ -286,7 +263,7 @@ for SERVICIO in "${SERVICIOS_OBLIGATORIOS[@]}"; do verificar_servicio "$SERVICIO
 for SERVICIO in "${SERVICIOS_OPCIONALES[@]}"; do verificar_servicio "$SERVICIO" no; done
 
 # =============================================================================
-# 4. IP PROPIA — para reportarle a X-BA (privada y pública/NAT de salida)
+# 4. IDENTIFICACIÓN DEL SERVIDOR
 # =============================================================================
 echo ""
 echo "--- Identificación del servidor ---"
@@ -296,13 +273,13 @@ registrar OK "Red" "IP privada del servidor: ${IP_PRIVADA:-no detectada}"
 
 IP_PUBLICA=$(curl -s --max-time 8 https://api.ipify.org 2>/dev/null)
 if [ -n "$IP_PUBLICA" ]; then
-  registrar OK "Red" "IP pública/NAT de salida: $IP_PUBLICA" "Es la IP que X-BA debe habilitar del lado de ellos"
+  registrar OK "Red" "IP pública/NAT de salida: $IP_PUBLICA"
 else
-  registrar AVISO "Red" "No se pudo determinar la IP pública/NAT de salida" "Puede indicar falta de salida a internet; consultar manualmente con: curl https://api.ipify.org"
+  registrar AVISO "Red" "No se pudo determinar la IP pública/NAT de salida"
 fi
 
 # =============================================================================
-# 5. DNS — Central Server, MSS y hosts adicionales
+# 5. DNS
 # =============================================================================
 echo ""
 echo "--- Resolución DNS ---"
@@ -314,8 +291,7 @@ for i in "${!ADICIONALES_HOST[@]}"; do
 done
 
 # =============================================================================
-# 6. CONECTIVIDAD TCP — puertos según lo que X-BA pide validar en cada
-#    integración (Central 80/4001, MSS 5500/5577, y adicionales)
+# 6. CONECTIVIDAD TCP
 # =============================================================================
 echo ""
 echo "--- Conectividad TCP ---"
@@ -334,8 +310,7 @@ for i in "${!ADICIONALES_HOST[@]}"; do
 done
 
 # =============================================================================
-# 7. VALIDACIÓN TLS — mismo chequeo que X-BA pide correr a mano
-#    (openssl s_client -connect host:puerto -showcerts)
+# 7. VALIDACIÓN TLS
 # =============================================================================
 echo ""
 echo "--- Validación TLS ---"
@@ -349,12 +324,10 @@ for i in "${!ADICIONALES_HOST[@]}"; do
 done
 
 # =============================================================================
-# 8. HTTP — anchor/internalconf (caso real: timeout en puerto 80 hacia el
-#    Central Server bloqueó la validación del anchor) y XSDs externos que
-#    valida el anchor al cargarse.
+# 8. VALIDACIÓN HTTP
 # =============================================================================
 echo ""
-echo "--- Validación HTTP (anchor y dependencias externas) ---"
+echo "--- Validación HTTP ---"
 
 probar_http "http://${CENTRAL_SERVER}/internalconf" "Anchor"
 probar_http "http://x-road.eu/xsd/identifiers" "Anchor (XSD externo)"
@@ -387,11 +360,11 @@ if [ -d /etc/xroad/globalconf ] && [ -n "$(ls -A /etc/xroad/globalconf 2>/dev/nu
     if [ "$HORAS" -lt 24 ]; then
       registrar OK "Configuración global" "El conf global se actualizó hace ${HORAS}h"
     else
-      registrar AVISO "Configuración global" "El conf global no se actualiza hace ${HORAS}h" "Revisar conectividad al Central Server y el estado de xroad-confclient"
+      registrar AVISO "Configuración global" "El conf global no se actualiza hace ${HORAS}h"
     fi
   fi
 else
-  registrar ERROR "Configuración global" "No hay conf global descargado en /etc/xroad/globalconf" "El Security Server todavía no sincronizó con el Central Server (¿anchor cargado?)"
+  registrar ERROR "Configuración global" "No hay conf global descargado en /etc/xroad/globalconf"
 fi
 
 # =============================================================================
@@ -404,8 +377,7 @@ if [ "$DB_MODE" == "externa" ] && [ -n "$DB_HOST" ]; then
 fi
 
 # =============================================================================
-# 11. LOGS — patrones de error conocidos (relevados de casos de soporte
-#     reales) + búsqueda opcional de un ID de correlación puntual.
+# 11. LOGS
 # =============================================================================
 echo ""
 echo "--- Revisión de logs ---"
@@ -414,53 +386,42 @@ if [ -d /var/log/xroad ]; then
   ENCONTRO_ALGO=0
 
   buscar_patron() {
-    local PATRON=$1 CAT=$2 DESC=$3 SUGERENCIA=$4
+    local PATRON=$1 CAT=$2 DESC=$3
     local COINCIDENCIA
     COINCIDENCIA=$(grep -rl "$PATRON" /var/log/xroad/ 2>/dev/null | head -1)
     if [ -n "$COINCIDENCIA" ]; then
       ENCONTRO_ALGO=1
-      registrar AVISO "$CAT" "$DESC" "$SUGERENCIA (ver: $COINCIDENCIA)"
+      registrar AVISO "$CAT" "$DESC" "$COINCIDENCIA"
     fi
   }
 
   buscar_patron "TLS certificate does not match in global conf" "Certificados" \
-    "Se encontró el error 'Central server TLS certificate does not match in global conf'" \
-    "Verificar que el anchor cargado sea el del ambiente correcto y que el conf global esté sincronizado; si persiste, consultar a X-BA"
+    "Log con error: Central server TLS certificate does not match in global conf"
 
   buscar_patron "SignerNotReachableException\|Signer is not currently reachable" "Certificados" \
-    "Se encontró el error 'Signer is not currently reachable' al registrar un certificado" \
-    "Revisar systemctl status xroad-signer, reiniciarlo si hace falta y reintentar el registro del certificado AUTH"
+    "Log con error: Signer is not currently reachable"
 
   buscar_patron "Connection timed out" "Red" \
-    "Se encontraron timeouts de conexión en los logs de X-Road" \
-    "Puede indicar un puerto bloqueado; revisar los resultados de conectividad TCP de este reporte"
-
-  buscar_patron "CSRF token not found" "Sesión web" \
-    "Se encontró 'CSRF token not found in header' en los logs de la UI" \
-    "Suele ser inofensivo en el primer request de una sesión nueva; ignorar si el login funciona con normalidad"
-
-  buscar_patron "authentication failure" "Autenticación" \
-    "Se encontraron fallos de autenticación del usuario administrador" \
-    "Confirmar la contraseña del usuario admin; resetear con: passwd <usuario> si hace falta"
+    "Log con timeouts de conexión"
 
   if [ "$ENCONTRO_ALGO" -eq 0 ]; then
-    registrar OK "Logs" "No se encontraron patrones de error conocidos en /var/log/xroad"
+    registrar OK "Logs" "Sin errores conocidos en /var/log/xroad"
   fi
 else
-  registrar AVISO "Logs" "No se encontró /var/log/xroad (¿corriendo sin permisos suficientes?)"
+  registrar AVISO "Logs" "No se encontró /var/log/xroad"
 fi
 
 BUSQUEDA_ID_RESULTADO=""
 echo ""
-read -p "  ¿Desea buscar un ID de correlación puntual en los logs (el que muestra la UI en un error)? (s/n): " BUSCAR_ID </dev/tty
+read -p "  ¿Desea buscar un ID de error en los logs? (s/n): " BUSCAR_ID </dev/tty
 if [[ "$BUSCAR_ID" == "s" || "$BUSCAR_ID" == "S" ]]; then
   read -p "  ID a buscar: " ID_BUSCADO </dev/tty
   if [ -n "$ID_BUSCADO" ] && [ -d /var/log/xroad ]; then
     BUSQUEDA_ID_RESULTADO=$(grep -R "$ID_BUSCADO" /var/log/xroad/ 2>/dev/null)
     if [ -n "$BUSQUEDA_ID_RESULTADO" ]; then
-      registrar AVISO "Logs" "Se encontraron coincidencias para el ID $ID_BUSCADO" "Ver detalle completo en el reporte .txt"
+      registrar AVISO "Logs" "Coincidencias para el ID $ID_BUSCADO (detalle en el reporte .txt)"
     else
-      registrar OK "Logs" "No se encontraron coincidencias para el ID $ID_BUSCADO"
+      registrar OK "Logs" "Sin coincidencias para el ID $ID_BUSCADO"
     fi
   fi
 fi
@@ -488,7 +449,7 @@ elif command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -qi "^Status: a
     fi
   done
 else
-  registrar AVISO "Firewall" "No se detectó firewalld ni ufw activos, no se pudo verificar el estado de los puertos"
+  registrar AVISO "Firewall" "No hay firewalld ni ufw activo, no se verificaron los puertos"
 fi
 
 # =============================================================================
