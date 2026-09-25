@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================================
-# Pruebas post-instalación de X-Road Security Server v7.6.4
+# Pruebas post-instalación de X-Road Security Server
 # Plataforma X-BA — GCBA / Agencia de Sistemas de Información
 #
-# Corre sobre un Security Server ya instalado con instalar_xroad.sh. No
-# instala ni modifica nada: diagnostica conectividad, TLS, servicios y logs,
-# y genera un reporte .txt con lo que pasó (OK) y lo que no (AVISO/ERROR).
+# Corre sobre cualquier Security Server ya instalado, sin importar cómo se
+# instaló. No instala ni modifica nada: diagnostica conectividad, TLS,
+# servicios y logs, y genera un reporte .txt con lo que pasó (OK) y lo que
+# no (AVISO/ERROR). Los datos del servidor se leen de la propia instalación.
 # =============================================================================
 
 RED='\033[0;31m'
@@ -17,8 +18,6 @@ NC='\033[0m'
 ok()   { echo -e "${GREEN}[OK]${NC} $1"; }
 warn() { echo -e "${YELLOW}[AVISO]${NC} $1"; }
 err()  { echo -e "${RED}[ERROR]${NC} $1"; }
-info() { echo -e "${CYAN}[INFO]${NC} $1"; }
-fail() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
 # =============================================================================
 # REGISTRO DE RESULTADOS — cada chequeo se imprime en pantalla Y se guarda
@@ -48,7 +47,7 @@ registrar() {
 # =============================================================================
 probar_tcp() {
   local HOST=$1 PUERTO=$2 CAT=$3
-  if nc -zw5 "$HOST" "$PUERTO" 2>/dev/null; then
+  if timeout 5 bash -c "exec 3<>/dev/tcp/${HOST}/${PUERTO}" 2>/dev/null; then
     registrar OK "$CAT" "Conectividad a $HOST:$PUERTO OK"
   else
     registrar ERROR "$CAT" "Sin conectividad a $HOST:$PUERTO" "Solicitar apertura de este puerto a la mesa de ayuda / equipo de seguridad"
@@ -141,26 +140,82 @@ fi
 registrar OK "Sistema operativo" "SO detectado: $SO_PRETTY ($GESTOR_PAQUETES)"
 
 # =============================================================================
-# 1. DATOS DEL ORGANISMO — se leen de /etc/xroad/organismo.conf, generado
-#    por instalar_xroad.sh. Sin ese archivo no hay contra qué probar.
+# 1. DATOS DEL SERVIDOR — se leen de la propia instalación de X-Road (no
+#    dependen de cómo se instaló): el Central Server sale del anchor, el MSS
+#    del conf global y la base de datos de db.properties. Solo si el Central
+#    Server no se puede detectar (ej: todavía no se cargó el anchor) se
+#    pregunta el ambiente.
 # =============================================================================
 echo ""
-echo "--- Datos del organismo ---"
+echo "--- Datos del servidor ---"
 
-if [ ! -f /etc/xroad/organismo.conf ]; then
-  fail "No se encontró /etc/xroad/organismo.conf. Corré instalar_xroad.sh antes de este script."
+CENTRAL_SERVER=""
+MSS_SERVER=""
+AMBIENTE=""
+DB_MODE=""
+DB_HOST=""
+DB_PORT=""
+SERVER_CODE=""
+
+if [ -f /etc/xroad/configuration-anchor.xml ]; then
+  CENTRAL_SERVER=$(LC_ALL=C grep -oP '(?<=<downloadURL>)https?://\K[^/:<]+' /etc/xroad/configuration-anchor.xml 2>/dev/null | head -1)
+fi
+MSS_SERVER=$(LC_ALL=C grep -rhoP '(?<=<authCertRegServiceAddress>)[^<:]+' /etc/xroad/globalconf 2>/dev/null | head -1)
+if [ -z "$MSS_SERVER" ] && [[ "$CENTRAL_SERVER" == *central* ]]; then
+  MSS_SERVER="${CENTRAL_SERVER/central/mss}"
 fi
 
-source /etc/xroad/organismo.conf
-info "Datos cargados desde /etc/xroad/organismo.conf"
+if [ -z "$CENTRAL_SERVER" ]; then
+  warn "No se pudo detectar el Central Server (¿todavía no se cargó el anchor?). Indique el ambiente."
+  echo ""
+  echo "  [1] QA"
+  echo "  [2] HML - Homologación"
+  echo "  [3] PRD - Producción"
+  echo ""
+  while true; do
+    read -p "  Opción (1/2/3): " OPT </dev/tty
+    case $OPT in
+      1) CENTRAL_SERVER="xroad-central-qa.gcba.gob.ar";  MSS_SERVER="xroad-mss-qa.gcba.gob.ar";  break ;;
+      2) CENTRAL_SERVER="xroad-central-hml.gcba.gob.ar"; MSS_SERVER="xroad-mss-hml.gcba.gob.ar"; break ;;
+      3) CENTRAL_SERVER="xroad-central.buenosaires.gob.ar"; MSS_SERVER="xroad-mss.buenosaires.gob.ar"; break ;;
+      *) warn "Opción inválida, ingrese 1, 2 o 3." ;;
+    esac
+  done
+fi
+
+if [ -z "$MSS_SERVER" ]; then
+  read -p "  No se pudo detectar el MSS. Ingrese su host: " MSS_SERVER </dev/tty
+fi
+
+case "$CENTRAL_SERVER" in
+  *-qa.*)  AMBIENTE="QA" ;;
+  *-hml.*) AMBIENTE="HML" ;;
+  *.buenosaires.gob.ar) AMBIENTE="PRD" ;;
+  *) AMBIENTE="desconocido" ;;
+esac
+
+DB_URL=$(LC_ALL=C grep -m1 -oP '^serverconf\.hibernate\.connection\.url\s*=\s*jdbc:postgresql://\K[^/\s]+' /etc/xroad/db.properties 2>/dev/null)
+if [ -n "$DB_URL" ]; then
+  DB_HOST="${DB_URL%%:*}"
+  DB_PORT="${DB_URL##*:}"
+  [ "$DB_PORT" == "$DB_URL" ] && DB_PORT=5432
+  case "$DB_HOST" in
+    127.0.0.1|localhost|"["*) DB_MODE="interna" ;;
+    *) DB_MODE="externa" ;;
+  esac
+fi
+
+if [ -f /etc/xroad/organismo.conf ]; then
+  SERVER_CODE=$(LC_ALL=C grep -oP '^SERVER_CODE=\K.*' /etc/xroad/organismo.conf 2>/dev/null | head -1)
+fi
+
 echo "  Ambiente        : $AMBIENTE"
-echo "  Server Code     : $SERVER_CODE"
 echo "  Central Server  : $CENTRAL_SERVER"
 echo "  MSS Server      : $MSS_SERVER"
-echo "  Base de datos   : $DB_MODE"
+echo "  Base de datos   : ${DB_MODE:-no detectada}${DB_HOST:+ ($DB_HOST:$DB_PORT)}"
 
 echo ""
-read -p "  ¿Desea agregar otros hosts para probar (ej: SS Provider/Consumer de otro organismo, dominio de un dominio sectorial)? (s/n): " AGREGAR_HOSTS </dev/tty
+read -p "  ¿Desea agregar otros hosts para probar (ej: SS Provider/Consumer de otro organismo)? (s/n): " AGREGAR_HOSTS </dev/tty
 ADICIONALES_LABEL=()
 ADICIONALES_HOST=()
 ADICIONALES_PUERTOS=()
@@ -182,8 +237,6 @@ fi
 
 # =============================================================================
 # 2. VERIFICACIÓN DE INSTALACIÓN
-#    (SO/RAM/disco/Java ya los valida instalar_xroad.sh; acá solo se confirma
-#    que la instalación esté presente antes de probar el resto)
 # =============================================================================
 echo ""
 echo "--- Verificación de instalación ---"
@@ -198,7 +251,7 @@ fi
 if [ -n "$PAQUETE_INSTALADO" ]; then
   registrar OK "Instalación" "Paquete xroad-securityserver instalado ($PAQUETE_INSTALADO)"
 else
-  registrar ERROR "Instalación" "El paquete xroad-securityserver no está instalado" "Correr instalar_xroad.sh antes de este script"
+  registrar ERROR "Instalación" "El paquete xroad-securityserver no está instalado"
 fi
 
 # =============================================================================
@@ -207,25 +260,30 @@ fi
 echo ""
 echo "--- Servicios de X-Road ---"
 
-SERVICIOS=(
-  xroad-signer
-  xroad-base
-  xroad-confclient
-  xroad-proxy
-  xroad-proxy-ui-api
-  xroad-monitor
-  xroad-addon-messagelog
-)
+# Los obligatorios existen en todas las versiones; los opcionales dependen de
+# la versión y de los addons instalados, así que si no existen se omiten.
+SERVICIOS_OBLIGATORIOS=(xroad-signer xroad-confclient xroad-proxy xroad-proxy-ui-api)
+SERVICIOS_OPCIONALES=(xroad-base xroad-monitor xroad-opmonitor xroad-addon-messagelog)
 
-for SERVICIO in "${SERVICIOS[@]}"; do
-  if systemctl list-unit-files "${SERVICIO}.service" &>/dev/null && systemctl is-active "$SERVICIO" &>/dev/null; then
+verificar_servicio() {
+  local SERVICIO=$1 OBLIGATORIO=$2
+  if ! systemctl cat "$SERVICIO" &>/dev/null; then
+    if [ "$OBLIGATORIO" == "si" ]; then
+      registrar ERROR "Servicios" "$SERVICIO: no está instalado" "Revisar: systemctl status $SERVICIO"
+    fi
+    return
+  fi
+  if systemctl is-active "$SERVICIO" &>/dev/null; then
+    local DESDE
     DESDE=$(systemctl show "$SERVICIO" -p ActiveEnterTimestamp --value 2>/dev/null)
     registrar OK "Servicios" "$SERVICIO: activo" "desde: ${DESDE:-desconocido}"
   else
-    ESTADO=$(systemctl is-active "$SERVICIO" 2>/dev/null)
-    registrar ERROR "Servicios" "$SERVICIO: ${ESTADO:-no encontrado}" "Revisar: systemctl status $SERVICIO"
+    registrar ERROR "Servicios" "$SERVICIO: $(systemctl is-active "$SERVICIO" 2>/dev/null)" "Revisar: systemctl status $SERVICIO"
   fi
-done
+}
+
+for SERVICIO in "${SERVICIOS_OBLIGATORIOS[@]}"; do verificar_servicio "$SERVICIO" si; done
+for SERVICIO in "${SERVICIOS_OPCIONALES[@]}"; do verificar_servicio "$SERVICIO" no; done
 
 # =============================================================================
 # 4. IP PROPIA — para reportarle a X-BA (privada y pública/NAT de salida)
@@ -342,7 +400,7 @@ fi
 if [ "$DB_MODE" == "externa" ] && [ -n "$DB_HOST" ]; then
   echo ""
   echo "--- Base de datos externa ---"
-  probar_tcp "$DB_HOST" 5432 "Base de datos"
+  probar_tcp "$DB_HOST" "${DB_PORT:-5432}" "Base de datos"
 fi
 
 # =============================================================================
